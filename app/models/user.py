@@ -10,6 +10,8 @@ class User(Base):
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
+    role = Column(String, default="user")
+    plan = Column(String, default="free")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     bot_config = relationship("BotConfig", back_populates="user", uselist=False)

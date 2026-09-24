@@ -25,12 +25,13 @@ async def global_exception_handler(request, exc):
         content={"message": "Internal Server Error", "traceback": traceback.format_exception(type(exc), exc, exc.__traceback__)}
     )
 
-from app.api import auth, webhooks, settings, channels
+from app.api import auth, webhooks, settings, channels, admin
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(webhooks.router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(channels.router, prefix="/api/channels", tags=["channels"])
+app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 
 
 @app.get("/")
