@@ -4,3 +4,5 @@ __pycache__/
 .env
 .vercel/
 sql_app.db
+.neon
+.env.local
