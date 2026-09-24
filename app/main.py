@@ -6,6 +6,9 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="WhatsAuto API")
 
+from fastapi.responses import JSONResponse
+import traceback
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,6 +16,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=500,
+        content={"message": "Internal Server Error", "traceback": traceback.format_exception(type(exc), exc, exc.__traceback__)}
+    )
 
 from app.api import auth, webhooks, settings, channels
 
