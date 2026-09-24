@@ -14,10 +14,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api import auth, webhooks
+from app.api import auth, webhooks, settings, channels
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-app.include_router(webhooks.router, prefix="/api", tags=["webhooks"])
+app.include_router(webhooks.router, prefix="/api/webhooks", tags=["webhooks"])
+app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
+app.include_router(channels.router, prefix="/api/channels", tags=["channels"])
 
 
 @app.get("/")

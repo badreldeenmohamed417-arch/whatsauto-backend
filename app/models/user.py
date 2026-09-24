@@ -21,7 +21,9 @@ class BotConfig(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
+    company_name = Column(String, default="شركتي")
     system_prompt = Column(Text, default="You are a helpful AI assistant for customer service.")
+    tone = Column(String, default="professional")
     is_active = Column(Boolean, default=True)
 
     user = relationship("User", back_populates="bot_config")
