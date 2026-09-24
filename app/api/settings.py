@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -25,8 +26,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 def subscription_active(user: User) -> bool:
-    from datetime import datetime, timezone
-    return bool(user.expires_at and user.expires_at > datetime.now(timezone.utc) and user.subscription_status == "ACTIVE")
+    if not user.expires_at or user.subscription_status != "ACTIVE":
+        return False
+    expires = user.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return expires > datetime.now(timezone.utc)
 
 class BotConfigUpdate(BaseModel):
     company_name: str = ""
@@ -69,10 +74,13 @@ def update_bot_config(data: BotConfigUpdate, current_user: User = Depends(get_cu
 
 @router.get("/subscription")
 def get_subscription(current_user: User = Depends(get_current_user)):
-    from datetime import datetime, timezone
+    expires = current_user.expires_at
+    if expires and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
     active = subscription_active(current_user)
+    days = max(0, (expires - datetime.now(timezone.utc)).days) if expires else 0
     return {
         "status": "ACTIVE" if active else "EXPIRED",
-        "expires_at": current_user.expires_at.isoformat() if current_user.expires_at else None,
-        "days_remaining": max(0, (current_user.expires_at - datetime.now(timezone.utc)).days) if current_user.expires_at else 0
+        "expires_at": expires.isoformat() if expires else None,
+        "days_remaining": days
     }
