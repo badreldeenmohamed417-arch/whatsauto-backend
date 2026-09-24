@@ -1,87 +1,168 @@
+import os
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
+
 from app.db.session import get_db
+from app.models.user import User, BotConfig, ChannelConfig, Conversation, Message
 from app.services.ai import generate_response
+from app.services.crypto import decrypt_secret
+from app.api.settings import subscription_active
+import httpx
 
 router = APIRouter()
+VERIFY_TOKEN = os.environ.get("META_VERIFY_TOKEN", "")
 
-# Verify token for Meta Webhooks
-VERIFY_TOKEN = "my_secure_verify_token"
+async def graph_post(access_token: str, url: str, payload: dict):
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(url, params={"access_token": access_token}, json=payload)
+        response.raise_for_status()
+        return response.json()
 
-@router.get("/webhooks/meta")
+def get_config_for_provider(db, channel_type: str, provider_id: str):
+    return db.query(ChannelConfig).filter(
+        ChannelConfig.channel_type == channel_type,
+        ChannelConfig.provider_id == provider_id,
+        ChannelConfig.is_active == True
+    ).first()
+
+def get_conversation(db, user_id: int, channel: str, customer_id: str, customer_name: str = ""):
+    conversation = db.query(Conversation).filter(
+        Conversation.user_id == user_id,
+        Conversation.channel_type == channel,
+        Conversation.customer_id == customer_id
+    ).first()
+    if not conversation:
+        conversation = Conversation(
+            user_id=user_id, channel_type=channel,
+            customer_id=customer_id, customer_name=customer_name or ""
+        )
+        db.add(conversation)
+        db.flush()
+    elif customer_name and not conversation.customer_name:
+        conversation.customer_name = customer_name
+    return conversation
+
+async def process_message(db, channel, provider_id, customer_id, text, customer_name=""):
+    channel_config = get_config_for_provider(db, channel, provider_id)
+    if not channel_config or not text:
+        return
+    user = db.query(User).filter(User.id == channel_config.user_id).first()
+    if not user or not subscription_active(user):
+        return
+    bot = db.query(BotConfig).filter(BotConfig.user_id == user.id).first()
+    if not bot or not bot.is_active:
+        return
+
+    conversation = get_conversation(db, user.id, channel, customer_id, customer_name)
+    history = (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation.id)
+        .order_by(Message.created_at.desc())
+        .limit(12)
+        .all()
+    )
+    history_text = "\n".join(f"{m.sender}: {m.content}" for m in reversed(history))
+    system_prompt = f"""أنت موظف خدمة عملاء لشركة {bot.company_name}.
+وصف الشركة:
+{bot.description}
+
+المنتجات والخدمات:
+{bot.products}
+
+تعليمات إضافية:
+{bot.instructions}
+
+لهجة الرد:
+{bot.tone}
+
+رقم التحويل لموظف بشري:
+{bot.handover_number}
+
+قواعد:
+- رد باختصار وبوضوح.
+- لا تخترع معلومات أو أسعاراً غير موجودة.
+- إذا لم تعرف الإجابة، أخبر العميل أن موظفاً من الفريق يمكنه مساعدته.
+- لا تدّعي تنفيذ إجراء لم تنفذه.
+- حافظ على لغة العميل ولهجته قدر الإمكان.
+"""
+    db.add(Message(conversation_id=conversation.id, sender="customer", content=text))
+    db.commit()
+    reply = await generate_response(system_prompt + "\n\nسياق المحادثة الأخير:\n" + history_text, text, bot.tone)
+    db.add(Message(conversation_id=conversation.id, sender="bot", content=reply))
+    db.commit()
+
+    token = decrypt_secret(channel_config.access_token) if channel_config.access_token else ""
+    if channel == "whatsapp":
+        await graph_post(token, f"https://graph.facebook.com/v21.0/{provider_id}/messages", {
+            "messaging_product": "whatsapp",
+            "to": customer_id,
+            "type": "text",
+            "text": {"body": reply}
+        })
+    elif channel == "facebook":
+        await graph_post(token, f"https://graph.facebook.com/v21.0/me/messages", {
+            "recipient": {"id": customer_id},
+            "message": {"text": reply}
+        })
+
+@router.get("/meta")
 def verify_webhook(request: Request):
     mode = request.query_params.get("hub.mode")
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
+    if mode == "subscribe" and token == VERIFY_TOKEN and challenge:
+        return int(challenge)
+    raise HTTPException(status_code=403, detail="Verification failed")
 
-    if mode and token:
-        if mode == "subscribe" and token == VERIFY_TOKEN:
-            return int(challenge)
-        else:
-            raise HTTPException(status_code=403, detail="Verification failed")
-    
-    raise HTTPException(status_code=400, detail="Missing parameters")
-
-@router.post("/webhooks/meta")
+@router.post("/meta")
 async def handle_webhook(request: Request, db: Session = Depends(get_db)):
     data = await request.json()
-    
-    # Process Meta webhook data (WhatsApp, Messenger, Facebook Comments)
-    print("Received webhook:", data)
-    
-    # Example parsing logic (simplified)
     try:
         if data.get("object") == "whatsapp_business_account":
             for entry in data.get("entry", []):
                 for change in entry.get("changes", []):
                     value = change.get("value", {})
-                    if "messages" in value:
-                        for message in value["messages"]:
-                            sender_phone = message.get("from")
-                            text = message.get("text", {}).get("body", "")
-                            
-                            # Use AI service
-                            ai_reply = await generate_response(
-                                system_prompt="You are a helpful customer service AI for WhatsAuto.",
-                                user_message=text
+                    provider_id = value.get("metadata", {}).get("phone_number_id")
+                    for message in value.get("messages", []):
+                        if message.get("type") == "text":
+                            await process_message(
+                                db, "whatsapp", provider_id,
+                                message.get("from", ""),
+                                message.get("text", {}).get("body", "")
                             )
-                            print(f"Replying to WhatsApp user {sender_phone} with: {ai_reply}")
-                            # TODO: Send API request to WhatsApp Graph API to send `ai_reply`
-                            
+
         elif data.get("object") == "page":
             for entry in data.get("entry", []):
-                # Handle Messenger or Comments
-                if "messaging" in entry:
-                    # Messenger
-                    for event in entry["messaging"]:
-                        sender_psid = event["sender"]["id"]
-                        text = event.get("message", {}).get("text", "")
-                        
-                        ai_reply = await generate_response(
-                            system_prompt="You are a helpful customer service AI for WhatsAuto.",
-                            user_message=text
-                        )
-                        print(f"Replying to Messenger user {sender_psid} with: {ai_reply}")
-                        # TODO: Send API request to Messenger Graph API
-                        
-                elif "changes" in entry:
-                    # Facebook Comments
-                    for change in entry["changes"]:
-                        if change.get("field") == "feed":
-                            value = change["value"]
-                            if value.get("item") == "comment" and value.get("verb") == "add":
-                                comment_id = value["comment_id"]
-                                message = value["message"]
-                                
-                                ai_reply = await generate_response(
-                                    system_prompt="You are a helpful customer service AI. Reply to the Facebook comment. Say you will message them privately if appropriate.",
-                                    user_message=message
-                                )
-                                print(f"Replying publicly to comment {comment_id}: {ai_reply}")
-                                # TODO: Send public reply via Graph API
-                                # TODO: Send private message via Messenger if possible
+                page_id = str(entry.get("id", ""))
+                for event in entry.get("messaging", []):
+                    if event.get("message", {}).get("is_echo"):
+                        continue
+                    sender = event.get("sender", {}).get("id")
+                    text = event.get("message", {}).get("text", "")
+                    await process_message(db, "facebook", page_id, sender, text)
 
-    except Exception as e:
-        print(f"Error processing webhook: {e}")
-        
+                for change in entry.get("changes", []):
+                    if change.get("field") != "feed":
+                        continue
+                    value = change.get("value", {})
+                    if value.get("item") == "comment" and value.get("verb") == "add":
+                        comment_id = value.get("comment_id")
+                        message = value.get("message", "")
+                        channel_config = get_config_for_provider(db, "facebook", page_id)
+                        if not channel_config or not message:
+                            continue
+                        user = db.query(User).filter(User.id == channel_config.user_id).first()
+                        bot = db.query(BotConfig).filter(BotConfig.user_id == user.id).first() if user else None
+                        if not user or not bot or not subscription_active(user) or not bot.is_active:
+                            continue
+                        reply = await generate_response(
+                            f"أنت موظف خدمة عملاء لشركة {bot.company_name}. رد على تعليق فيسبوك باختصار.\n{bot.description}\n{bot.products}",
+                            message, bot.tone
+                        )
+                        token = decrypt_secret(channel_config.access_token)
+                        await graph_post(token, f"https://graph.facebook.com/v21.0/{comment_id}/comments", {"message": reply})
+
+    except Exception as exc:
+        print(f"Webhook processing error: {exc}")
+        # Return 200 so Meta does not aggressively retry malformed/non-actionable events.
     return {"status": "ok"}
