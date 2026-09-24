@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.session import engine, Base
+from app.models import user # Import models so Base.metadata has them registered
 
 Base.metadata.create_all(bind=engine)
 
