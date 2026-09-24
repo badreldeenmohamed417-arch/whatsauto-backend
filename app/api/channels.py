@@ -22,27 +22,40 @@ class ChannelConfigCreate(BaseModel):
 
 @router.get("/", response_model=List[ChannelConfigResponse])
 def get_channels(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(ChannelConfig).filter(ChannelConfig.user_id == current_user.id).all()
+    channels = db.query(ChannelConfig).filter(ChannelConfig.user_id == current_user.id).all()
+    return [
+        {
+            "id": c.id,
+            "platform": c.channel_type,
+            "channel_id": c.provider_id or "",
+            "is_active": c.is_active
+        } for c in channels
+    ]
 
 @router.post("/", response_model=ChannelConfigResponse)
 def connect_channel(data: ChannelConfigCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     channel = db.query(ChannelConfig).filter(
         ChannelConfig.user_id == current_user.id,
-        ChannelConfig.platform == data.platform
+        ChannelConfig.channel_type == data.platform
     ).first()
     
     if channel:
-        channel.channel_id = data.channel_id
+        channel.provider_id = data.channel_id
         channel.is_active = True
     else:
         channel = ChannelConfig(
             user_id=current_user.id,
-            platform=data.platform,
-            channel_id=data.channel_id,
+            channel_type=data.platform,
+            provider_id=data.channel_id,
             is_active=True
         )
         db.add(channel)
     
     db.commit()
     db.refresh(channel)
-    return channel
+    return {
+        "id": channel.id,
+        "platform": channel.channel_type,
+        "channel_id": channel.provider_id,
+        "is_active": channel.is_active
+    }
