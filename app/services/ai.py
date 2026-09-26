@@ -11,6 +11,27 @@ groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
+async def _complete(system_prompt: str, user_message: str, max_tokens: int = 300) -> str:
+    if groq_client:
+        try:
+            result = await groq_client.chat.completions.create(
+                messages=[{"role":"system","content":system_prompt},{"role":"user","content":user_message}],
+                model=os.environ.get("GROQ_MODEL", "llama-3.1-70b-versatile"),
+                max_tokens=max_tokens,
+                temperature=0.2,
+            )
+            return result.choices[0].message.content or ""
+        except Exception as e:
+            print(f"Groq API failed: {e}")
+    if GEMINI_API_KEY:
+        try:
+            model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-1.5-flash"))
+            result = await model.generate_content_async(system_prompt + "\\n\\n" + user_message)
+            return result.text or ""
+        except Exception as e:
+            print(f"Gemini API failed: {e}")
+    return ""
+
 async def decide_action(system_prompt: str, event_text: str, channel: str, products: list[dict]) -> dict:
     products_json = json.dumps(products, ensure_ascii=False)
     prompt = system_prompt + '''
