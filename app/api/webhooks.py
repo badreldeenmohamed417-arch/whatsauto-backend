@@ -181,7 +181,7 @@ async def handle_webhook(request: Request, db: Session = Depends(get_db)):
                         )
                         if action["action"] == "ignore":
                             continue
-                        reply = action.get("reply") or await generate_response(owner_prompt(bot), message, bot.tone)
+                        reply = action.get("reply") or await generate_response("الشركة: " + bot.description + "\nالمنتجات: " + bot.products + "\nتعليمات صاحب البوت: " + bot.instructions, message, bot.tone)
                         if action["action"] == "handover" and bot.handover_number:
                             reply = reply + "\nللتواصل: " + bot.handover_number
                         token = decrypt_secret(channel_config.access_token)
