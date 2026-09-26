@@ -1,10 +1,11 @@
 import os
+import json
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.user import User, BotConfig, ChannelConfig, Conversation, Message
-from app.services.ai import generate_response
+from app.services.ai import generate_response, decide_action
 from app.services.crypto import decrypt_secret
 from app.api.settings import subscription_active
 import httpx
@@ -17,6 +18,13 @@ async def graph_post(access_token: str, url: str, payload: dict):
         response = await client.post(url, params={"access_token": access_token}, json=payload)
         response.raise_for_status()
         return response.json()
+
+def parse_products(raw):
+    try:
+        value = json.loads(raw or "[]")
+        return value if isinstance(value, list) else []
+    except Exception:
+        return []
 
 def get_config_for_provider(db, channel_type: str, provider_id: str):
     return db.query(ChannelConfig).filter(
@@ -87,7 +95,17 @@ async def process_message(db, channel, provider_id, customer_id, text, customer_
 """
     db.add(Message(conversation_id=conversation.id, sender="customer", content=text))
     db.commit()
-    reply = await generate_response(system_prompt + "\n\nسياق المحادثة الأخير:\n" + history_text, text, bot.tone)
+    action = await decide_action(
+        system_prompt + "\n\nسياق المحادثة الأخير:\n" + history_text,
+        text,
+        channel,
+        parse_products(bot.products)
+    )
+    if action["action"] == "ignore":
+        return
+    reply = action.get("reply") or await generate_response(system_prompt, text, bot.tone)
+    if action["action"] == "handover" and bot.handover_number:
+        reply = reply + "\nللتواصل مع الموظف: " + bot.handover_number
     db.add(Message(conversation_id=conversation.id, sender="bot", content=reply))
     db.commit()
 
@@ -155,12 +173,23 @@ async def handle_webhook(request: Request, db: Session = Depends(get_db)):
                         bot = db.query(BotConfig).filter(BotConfig.user_id == user.id).first() if user else None
                         if not user or not bot or not subscription_active(user) or not bot.is_active:
                             continue
-                        reply = await generate_response(
-                            f"أنت موظف خدمة عملاء لشركة {bot.company_name}. رد على تعليق فيسبوك باختصار.\n{bot.description}\n{bot.products}",
-                            message, bot.tone
+                        action = await decide_action(
+                            owner_prompt(bot),
+                            message,
+                            "facebook_comment",
+                            parse_products(bot.products)
                         )
+                        if action["action"] == "ignore":
+                            continue
+                        reply = action.get("reply") or await generate_response(owner_prompt(bot), message, bot.tone)
+                        if action["action"] == "handover" and bot.handover_number:
+                            reply = reply + "\nللتواصل: " + bot.handover_number
                         token = decrypt_secret(channel_config.access_token)
-                        await graph_post(token, f"https://graph.facebook.com/v21.0/{comment_id}/comments", {"message": reply})
+                        sender_id = value.get("from", {}).get("id")
+                        if action["action"] == "reply_private" and sender_id:
+                            await graph_post(token, "https://graph.facebook.com/v21.0/me/messages", {"recipient": {"id": sender_id}, "message": {"text": reply}})
+                        else:
+                            await graph_post(token, f"https://graph.facebook.com/v21.0/{comment_id}/comments", {"message": reply})
 
     except Exception as exc:
         print(f"Webhook processing error: {exc}")
