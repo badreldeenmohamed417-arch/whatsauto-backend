@@ -174,7 +174,7 @@ async def handle_webhook(request: Request, db: Session = Depends(get_db)):
                         if not user or not bot or not subscription_active(user) or not bot.is_active:
                             continue
                         action = await decide_action(
-                            owner_prompt(bot),
+                            "تعليمات صاحب البوت:\n" + bot.instructions + "\nالشركة:\n" + bot.description + "\nالمنتجات:\n" + bot.products,
                             message,
                             "facebook_comment",
                             parse_products(bot.products)
