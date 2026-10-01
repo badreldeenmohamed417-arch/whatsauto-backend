@@ -1,7 +1,13 @@
 name: Run Database Migrations
 
 on:
+  push:
+    branches: ["master"]
   workflow_dispatch:
+
+concurrency:
+  group: whatsauto-db-migrations
+  cancel-in-progress: false
 
 jobs:
   migrate:
