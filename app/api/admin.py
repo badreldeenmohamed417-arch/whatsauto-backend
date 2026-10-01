@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from dateutil.relativedelta import relativedelta
+import calendar
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -26,6 +26,13 @@ def get_current_admin(current_user: User = Depends(get_current_user)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not enough privileges")
     return current_user
+
+def add_months(dt: datetime, months: int) -> datetime:
+    month_index = dt.month - 1 + months
+    year = dt.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
 
 @router.get("/users", response_model=list[UserAdminResponse])
 def get_all_users(
@@ -56,7 +63,7 @@ def activate_subscription(
     if expires < now:
         expires = now
 
-    user.expires_at = expires + relativedelta(months=req.months)
+    user.expires_at = add_months(expires, req.months)
     user.subscription_status = "ACTIVE"
     db.commit()
     db.refresh(user)
@@ -82,4 +89,3 @@ def disable_subscription(
     user.expires_at = None
     db.commit()
     return {"message": "Subscription disabled", "user_id": user.id}
-
