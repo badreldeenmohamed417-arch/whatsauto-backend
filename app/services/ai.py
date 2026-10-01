@@ -16,7 +16,7 @@ async def _complete(system_prompt: str, user_message: str, max_tokens: int = 300
         try:
             result = await groq_client.chat.completions.create(
                 messages=[{"role":"system","content":system_prompt},{"role":"user","content":user_message}],
-                model=os.environ.get("GROQ_MODEL", "llama-3.1-70b-versatile"),
+                model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b"),
                 max_tokens=max_tokens,
                 temperature=0.2,
             )
@@ -73,7 +73,7 @@ async def generate_response(system_prompt: str, user_message: str, tone: str = "
         try:
             chat_completion = await groq_client.chat.completions.create(
                 messages=messages,
-                model="llama3-8b-8192", 
+                model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b"), 
                 max_tokens=300,
             )
             return chat_completion.choices[0].message.content
@@ -85,7 +85,7 @@ async def generate_response(system_prompt: str, user_message: str, tone: str = "
     if GEMINI_API_KEY:
         full_prompt = f"{system_prompt}\nKeep responses under 300 tokens, avoid unnecessary explanations, and use a {tone} tone.\n\nUser: {user_message}"
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"))
             response = await model.generate_content_async(full_prompt)
             return response.text
         except Exception as e:
