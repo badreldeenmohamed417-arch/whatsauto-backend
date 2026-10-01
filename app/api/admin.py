@@ -1,6 +1,7 @@
+from datetime import datetime, timezone
+from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
 from pydantic import BaseModel
 
 from app.db.session import get_db
@@ -14,29 +15,71 @@ class UserAdminResponse(BaseModel):
     email: str
     is_active: bool
     role: str
-    plan: str
-    
-class PlanUpdateRequest(BaseModel):
-    user_id: int
-    plan: str
+    subscription_status: str
+    expires_at: datetime | None = None
 
-# Admin Middleware equivalent
+class SubscriptionRequest(BaseModel):
+    user_id: int
+    months: int = 1
+
 def get_current_admin(current_user: User = Depends(get_current_user)):
-    if current_user.role != 'admin':
+    if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not enough privileges")
     return current_user
 
-@router.get("/users", response_model=List[UserAdminResponse])
-def get_all_users(admin_user: User = Depends(get_current_admin), db: Session = Depends(get_db)):
-    users = db.query(User).all()
-    return users
+@router.get("/users", response_model=list[UserAdminResponse])
+def get_all_users(
+    admin_user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    return db.query(User).order_by(User.id.desc()).all()
 
-@router.post("/upgrade_plan")
-def upgrade_user_plan(req: PlanUpdateRequest, admin_user: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+@router.post("/subscriptions/activate")
+def activate_subscription(
+    req: SubscriptionRequest,
+    admin_user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    if req.months < 1 or req.months > 24:
+        raise HTTPException(status_code=400, detail="months must be between 1 and 24")
+
     user = db.query(User).filter(User.id == req.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    user.plan = req.plan
+
+    now = datetime.now(timezone.utc)
+    expires = user.expires_at
+    if expires is None:
+        expires = now
+    elif expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < now:
+        expires = now
+
+    user.expires_at = expires + relativedelta(months=req.months)
+    user.subscription_status = "ACTIVE"
     db.commit()
-    return {"message": "Plan updated successfully", "user_id": user.id, "new_plan": user.plan}
+    db.refresh(user)
+
+    return {
+        "message": "Subscription activated",
+        "user_id": user.id,
+        "status": user.subscription_status,
+        "expires_at": user.expires_at,
+    }
+
+@router.post("/subscriptions/disable")
+def disable_subscription(
+    req: SubscriptionRequest,
+    admin_user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == req.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.subscription_status = "EXPIRED"
+    user.expires_at = None
+    db.commit()
+    return {"message": "Subscription disabled", "user_id": user.id}
+
