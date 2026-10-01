@@ -20,16 +20,8 @@ app.add_middleware(
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    import traceback
     print(f"Unhandled request error: {type(exc).__name__}: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={
-            "message": "Internal Server Error",
-            "error": str(exc),
-            "traceback": traceback.format_exception(type(exc), exc, exc.__traceback__),
-        },
-    )
+    return JSONResponse(status_code=500, content={"message": "Internal Server Error"})
 
 from app.api import auth, webhooks, settings, channels, admin, chats
 
